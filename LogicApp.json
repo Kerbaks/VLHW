@@ -1,0 +1,455 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storagecontainerName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the blob container."
+      }
+    },
+    "RecieverEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address who will be recieving URL"
+      }
+    },
+    "SenderEmail": {
+      "type": "string",
+      "defaultValue": "kristaps.scerbaks@gmail.com",
+      "metadata": {
+        "description": "Email address who will be sending URL"
+      }
+    },
+    "logicAppName": {
+      "defaultValue": "NBA 2018 new players",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "metadata": {
+        "description": "Name of the Logic App."
+      }
+    },
+    "logicAppLocation": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "allowedValues": [
+        "[resourceGroup().location]",
+        "eastasia",
+        "southeastasia",
+        "centralus",
+        "eastus",
+        "eastus2",
+        "westus",
+        "northcentralus",
+        "southcentralus",
+        "northeurope",
+        "westeurope",
+        "japanwest",
+        "japaneast",
+        "brazilsouth",
+        "australiaeast",
+        "australiasoutheast",
+        "southindia",
+        "centralindia",
+        "westindia",
+        "canadacentral",
+        "canadaeast",
+        "uksouth",
+        "ukwest",
+        "westcentralus",
+        "westus2"
+      ],
+      "metadata": {
+        "description": "Location of the Logic App."
+      }
+    },
+    "workflows_NBA_2018_season_players_name": {
+      "defaultValue": "NBA_2018_season_players",
+      "type": "String"
+    },
+    "connections_azureblob_externalid": {
+      "type": "String",
+      "metadata": {
+        "description": "Azureblob connection. (/subscriptions/SUBSCRIPTION_ID/resourceGroups/RESOURCEGROUP_NAME/providers/Microsoft.Web/connections/azureblob)"
+      }
+    },
+    "connections_sendgrid_externalid": {
+      "type": "String",
+      "metadata": {
+        "description": "Sendgrid connection. (/subscriptions/SUBSCRIPTION_ID/resourceGroups/RESOURCEGROUP_NAME/providers/Microsoft.Web/connections/sendgrid)"
+      }
+    }
+  },
+  "variables": {},
+  "resources": [
+    {
+      "apiVersion": "2017-07-01",
+      "location": "westeurope",
+      "name": "[parameters('workflows_NBA_2018_season_players_name')]",
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            }
+          },
+          "triggers": {
+            "manual": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {
+                "schema": {}
+              }
+            }
+          },
+          "actions": {
+            "Create_SAS_URI_by_path": {
+              "runAfter": {
+                "Create_blob": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "body": {
+                  "Permissions": "Read"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azureblob']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/default/CreateSharedLinkByPath",
+                "queries": {
+                  "path": "[concat('/',parameters('storagecontainerName'),'/playerdata.json')]"
+                }
+              }
+            },
+            "Create_blob": {
+              "runAfter": {
+                "For_each": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "body": "@variables('output')",
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azureblob']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/default/files",
+                "queries": {
+                  "folderPath": "[concat('/',parameters('storagecontainerName'))]",
+                  "name": "/playerdata.json",
+                  "queryParametersSingleEncoded": true
+                }
+              },
+              "runtimeConfiguration": {
+                "contentTransfer": {
+                  "transferMode": "Chunked"
+                }
+              }
+            },
+            "Filter_array": {
+              "runAfter": {
+                "Parse_JSON": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Query",
+              "inputs": {
+                "from": "@body('Parse_JSON')",
+                "where": "@equals(item()['yearsPro'], string('0'))"
+              }
+            },
+            "For_each": {
+              "foreach": "@body('Filter_array')",
+              "actions": {
+                "Append_to_array_variable": {
+                  "runAfter": {
+                    "HTTP": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "AppendToArrayVariable",
+                  "inputs": {
+                    "name": "Output",
+                    "value": {
+                      "firstName": "@items('For_each')?['firstName']",
+                      "heightMeters": "@items('For_each')?['heightMeters']",
+                      "lastName": "@items('For_each')?['lastName']",
+                      "plusMinus": "@body('HTTP')?['league']?['standard']?['stats']?['careerSummary']?['plusMinus']"
+                    }
+                  }
+                },
+                "HTTP": {
+                  "runAfter": {},
+                  "type": "Http",
+                  "inputs": {
+                    "method": "GET",
+                    "uri": "@{concat('http://data.nba.net/10s/prod/v1/2018/players/',items('For_each')?['personId'],'_profile.json')}"
+                  }
+                }
+              },
+              "runAfter": {
+                "Filter_array": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach"
+            },
+            "GetAllPlayers": {
+              "runAfter": {
+                "Initialize_variable": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "method": "GET",
+                "uri": "http://data.nba.net/10s/prod/v1/2018/players.json"
+              }
+            },
+            "Initialize_variable": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "Output",
+                    "type": "Array"
+                  }
+                ]
+              }
+            },
+            "Parse_JSON": {
+              "runAfter": {
+                "GetAllPlayers": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ParseJson",
+              "inputs": {
+                "content": "@body('GetAllPlayers')?['league']?['standard']",
+                "schema": {
+                  "items": {
+                    "properties": {
+                      "collegeName": {
+                        "type": "string"
+                      },
+                      "country": {
+                        "type": "string"
+                      },
+                      "dateOfBirthUTC": {
+                        "type": "string"
+                      },
+                      "draft": {
+                        "properties": {
+                          "pickNum": {
+                            "type": "string"
+                          },
+                          "roundNum": {
+                            "type": "string"
+                          },
+                          "seasonYear": {
+                            "type": "string"
+                          },
+                          "teamId": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "firstName": {
+                        "type": "string"
+                      },
+                      "heightFeet": {
+                        "type": "string"
+                      },
+                      "heightInches": {
+                        "type": "string"
+                      },
+                      "heightMeters": {
+                        "type": "string"
+                      },
+                      "isActive": {
+                        "type": "boolean"
+                      },
+                      "isallStar": {
+                        "type": "boolean"
+                      },
+                      "jersey": {
+                        "type": "string"
+                      },
+                      "lastAffiliation": {
+                        "type": "string"
+                      },
+                      "lastName": {
+                        "type": "string"
+                      },
+                      "nbaDebutYear": {
+                        "type": "string"
+                      },
+                      "personId": {
+                        "type": "string"
+                      },
+                      "pos": {
+                        "type": "string"
+                      },
+                      "teamId": {
+                        "type": "string"
+                      },
+                      "teamSitesOnly": {
+                        "properties": {
+                          "displayAffiliation": {
+                            "type": "string"
+                          },
+                          "freeAgentCode": {
+                            "type": "string"
+                          },
+                          "playerCode": {
+                            "type": "string"
+                          },
+                          "posFull": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "teams": {
+                        "items": {
+                          "properties": {
+                            "seasonEnd": {
+                              "type": "string"
+                            },
+                            "seasonStart": {
+                              "type": "string"
+                            },
+                            "teamId": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "teamId",
+                            "seasonStart",
+                            "seasonEnd"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "temporaryDisplayName": {
+                        "type": "string"
+                      },
+                      "weightKilograms": {
+                        "type": "string"
+                      },
+                      "weightPounds": {
+                        "type": "string"
+                      },
+                      "yearsPro": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "firstName",
+                      "lastName",
+                      "personId",
+                      "teamId",
+                      "jersey",
+                      "isActive",
+                      "pos",
+                      "heightFeet",
+                      "heightInches",
+                      "heightMeters",
+                      "weightPounds",
+                      "weightKilograms",
+                      "dateOfBirthUTC",
+                      "teams",
+                      "draft",
+                      "nbaDebutYear",
+                      "yearsPro",
+                      "collegeName",
+                      "lastAffiliation",
+                      "country"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "Response": {
+              "runAfter": {
+                "Send_email_(V2)": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Response",
+              "kind": "Http",
+              "inputs": {
+                "body": "@{variables('Output')} @{body('Create_SAS_URI_by_path')?['WebUrl']}",
+                "statusCode": 200
+              }
+            },
+            "Send_email_(V2)": {
+              "runAfter": {
+                "Create_SAS_URI_by_path": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "body": {
+                  "from": "[parameters('SenderEmail')]",
+                  "ishtml": true,
+                  "subject": "playerdata",
+                  "text": "@body('Create_SAS_URI_by_path')?['WebUrl']",
+                  "to": "[parameters('RecieverEmail')]"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sendgrid']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/mail/send"
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azureblob": {
+                "connectionId": "[parameters('connections_azureblob_externalid')]",
+                "connectionName": "azureblob",
+                "id": "/subscriptions/05f0f5ed-4091-473a-a22f-35b6d8222190/providers/Microsoft.Web/locations/westeurope/managedApis/azureblob"
+              },
+              "sendgrid": {
+                "connectionId": "[parameters('connections_sendgrid_externalid')]",
+                "connectionName": "sendgrid",
+                "id": "/subscriptions/05f0f5ed-4091-473a-a22f-35b6d8222190/providers/Microsoft.Web/locations/westeurope/managedApis/sendgrid"
+              }
+            }
+          }
+        }
+      },
+      "tags": {
+        "displayName": "LogicApp"
+      },
+      "type": "Microsoft.Logic/workflows"
+    }
+  ],
+  "outputs": {}
+}
